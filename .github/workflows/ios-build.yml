@@ -1,0 +1,283 @@
+name: Build JevJarvis iOS IPA
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Verify build package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$GITHUB_WORKSPACE/JevJarvis-iOS-云编译包.zip"
+          test -f "$ZIP"
+          echo "Build package: $ZIP"
+          ls -lh "$ZIP"
+
+      - name: Install CocoaPods
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v pod >/dev/null 2>&1; then
+            pod --version
+          else
+            sudo gem install cocoapods --no-document
+            pod --version
+          fi
+
+      - name: Unpack iOS source
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SRC_ROOT="$RUNNER_TEMP/JevJarvis-iOS-src"
+          rm -rf "$SRC_ROOT"
+          mkdir -p "$SRC_ROOT"
+
+          unzip -q "$GITHUB_WORKSPACE/JevJarvis-iOS-云编译包.zip" -d "$SRC_ROOT"
+
+          echo "Extracted source tree:"
+          find "$SRC_ROOT" -maxdepth 3 -type f \( -name "Podfile" -o -name "*.xcodeproj" -o -name "*.xcworkspace" \) -print | sort
+
+      - name: Disable App Group configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SRC_ROOT="$RUNNER_TEMP/JevJarvis-iOS-src"
+
+          python3 <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          root = Path(os.environ["SRC_ROOT"])
+          entitlement_hits = 0
+          project_hits = 0
+
+          for path in root.rglob("*.entitlements"):
+              try:
+                  xml = subprocess.check_output(
+                      ["plutil", "-convert", "xml1", "-o", "-", str(path)],
+                      text=True,
+                  )
+              except subprocess.CalledProcessError:
+                  print(f"Skipping unreadable entitlements: {path}")
+                  continue
+
+              pattern = re.compile(
+                  r'(?ms)^([ \t]*)<key>com\.apple\.security\.application-groups</key>\s*'
+                  r'<array>.*?</array>\s*'
+              )
+              if not pattern.search(xml):
+                  continue
+
+              replacement = (
+                  "<!-- App Group disabled for unsigned/self-signable build: "
+                  "com.apple.security.application-groups -->\n"
+              )
+              xml2, count = pattern.subn(replacement, xml, count=1)
+              if count:
+                  path.write_text(xml2, encoding="utf-8")
+                  entitlement_hits += 1
+                  print(f"Disabled App Group entitlement: {path}")
+
+          for path in root.rglob("project.pbxproj"):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              pattern = re.compile(
+                  r'^(\s*)com\.apple\.ApplicationGroups\.enabled\s*=\s*(?:1|YES)\s*;',
+                  re.MULTILINE,
+              )
+              text2, count = pattern.subn(
+                  r'\1// App Group disabled for unsigned/self-signable build: com.apple.ApplicationGroups.enabled = 1;',
+                  text,
+              )
+              if count:
+                  path.write_text(text2, encoding="utf-8")
+                  project_hits += count
+                  print(f"Disabled App Group project capability: {path} ({count} occurrence(s))")
+
+          print(f"App Group entitlements changed: {entitlement_hits}")
+          print(f"App Group project capability entries changed: {project_hits}")
+
+          remaining = []
+          for path in root.rglob("*.entitlements"):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              if "com.apple.security.application-groups" in text and "<key>com.apple.security.application-groups</key>" in text:
+                  remaining.append(str(path))
+          for path in root.rglob("project.pbxproj"):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              if re.search(
+                  r'^\s*com\.apple\.ApplicationGroups\.enabled\s*=\s*(?:1|YES)\s*;',
+                  text,
+                  re.MULTILINE,
+              ):
+                  remaining.append(str(path))
+
+          if remaining:
+              print("Remaining active App Group configuration:")
+              for item in remaining:
+                  print(f"  {item}")
+              raise SystemExit(1)
+
+          print("App Group configuration check passed.")
+          PY
+
+      - name: Locate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SRC_ROOT="$RUNNER_TEMP/JevJarvis-iOS-src"
+
+          PROJECT_ROOT="$(find "$SRC_ROOT" -type f -name Podfile -print -quit | xargs -r dirname || true)"
+          if [ -z "$PROJECT_ROOT" ]; then
+            PROJECT_ROOT="$(find "$SRC_ROOT" -type d -name "*.xcworkspace" -print -quit | xargs -r dirname || true)"
+          fi
+          if [ -z "$PROJECT_ROOT" ]; then
+            PROJECT_ROOT="$(find "$SRC_ROOT" -type d -name "*.xcodeproj" -print -quit | xargs -r dirname || true)"
+          fi
+          test -n "$PROJECT_ROOT"
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+          WORKSPACE="$(find "$PROJECT_ROOT" -maxdepth 2 -type d -name "*.xcworkspace" -print -quit || true)"
+          PROJECT="$(find "$PROJECT_ROOT" -maxdepth 2 -type d -name "*.xcodeproj" -print -quit || true)"
+
+          if [ -n "$WORKSPACE" ]; then
+            echo "BUILD_CONTAINER=workspace" >> "$GITHUB_ENV"
+            echo "BUILD_FILE=$WORKSPACE" >> "$GITHUB_ENV"
+          elif [ -n "$PROJECT" ]; then
+            echo "BUILD_CONTAINER=project" >> "$GITHUB_ENV"
+            echo "BUILD_FILE=$PROJECT" >> "$GITHUB_ENV"
+          else
+            echo "No .xcworkspace or .xcodeproj found under $PROJECT_ROOT"
+            exit 1
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT"
+          echo "BUILD_CONTAINER=$BUILD_CONTAINER"
+          echo "BUILD_FILE=$BUILD_FILE"
+
+      - name: Run pod install
+        shell: bash
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          set -euo pipefail
+          if [ -f Podfile ]; then
+            pod install
+          else
+            echo "No Podfile found; skipping pod install."
+          fi
+
+      - name: Detect Release scheme
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$BUILD_CONTAINER" = "workspace" ]; then
+            LIST_OUTPUT="$(xcodebuild -workspace "$BUILD_FILE" -list)"
+          else
+            LIST_OUTPUT="$(xcodebuild -project "$BUILD_FILE" -list)"
+          fi
+
+          echo "$LIST_OUTPUT"
+
+          SCHEME="$(printf '%s\n' "$LIST_OUTPUT" | awk '
+            /^Schemes:/ { found=1; next }
+            found && NF { gsub(/^[ \t]+|[ \t]+$/, ""); print; exit }
+          ')"
+
+          test -n "$SCHEME"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+          echo "Selected scheme: $SCHEME"
+
+      - name: Build Release archive without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCHIVE_PATH="$RUNNER_TEMP/JevJarvis-Release.xcarchive"
+          rm -rf "$ARCHIVE_PATH"
+
+          COMMON_ARGS=(
+            -scheme "$SCHEME"
+            -configuration Release
+            -archivePath "$ARCHIVE_PATH"
+            -sdk iphoneos
+            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGN_IDENTITY=""
+            DEVELOPMENT_TEAM=""
+            PROVISIONING_PROFILE_SPECIFIER=""
+          )
+
+          if [ "$BUILD_CONTAINER" = "workspace" ]; then
+            xcodebuild -workspace "$BUILD_FILE" \
+              "$""{COMMON_ARGS[@]}" \
+              clean archive
+          else
+            xcodebuild -project "$BUILD_FILE" \
+              "$""{COMMON_ARGS[@]}" \
+              clean archive
+          fi
+
+          test -d "$ARCHIVE_PATH"
+          find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -type d -name "*.app" -print
+
+          APP_PATH="$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -type d -name "*.app" -print -quit)"
+          test -n "$APP_PATH"
+
+          echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> "$GITHUB_ENV"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPA_ROOT="$RUNNER_TEMP/ipa"
+          IPA_PATH="$RUNNER_TEMP/JevJarvis-Release-unsigned.ipa"
+
+          rm -rf "$IPA_ROOT" "$IPA_PATH"
+          mkdir -p "$IPA_ROOT/Payload"
+          cp -R "$APP_PATH" "$IPA_ROOT/Payload/"
+
+          (
+            cd "$IPA_ROOT"
+            /usr/bin/zip -qry "$IPA_PATH" Payload
+          )
+
+          test -f "$IPA_PATH"
+          ls -lh "$IPA_PATH"
+
+          echo "IPA_PATH=$IPA_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JevJarvis-iOS-Release-unsigned-IPA
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JevJarvis-iOS-build-logs
+          path: |
+            ${{ runner.temp }}/JevJarvis-Release.xcarchive/Info.plist
+            ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
+          retention-days: 7
