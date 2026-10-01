@@ -172,31 +172,37 @@ jobs:
           set -euo pipefail
           export SRC_ROOT="$RUNNER_TEMP/JevJarvis-iOS-src"
 
-          PROJECT_MARKER="$(find "$SRC_ROOT" -type f -name Podfile -print -quit || true)"
-          if [ -z "$PROJECT_MARKER" ]; then
-            PROJECT_MARKER="$(find "$SRC_ROOT" -type d -name "*.xcworkspace" -print -quit || true)"
-          fi
-          if [ -z "$PROJECT_MARKER" ]; then
-            PROJECT_MARKER="$(find "$SRC_ROOT" -type d -name "*.xcodeproj" -print -quit || true)"
-          fi
-          test -n "$PROJECT_MARKER"
+          PODFILE="$(find "$SRC_ROOT" -type f -name Podfile -print -quit || true)"
+          WORKSPACE="$(find "$SRC_ROOT" -type d -name "*.xcworkspace" ! -path "*/.xcodeproj/*" -print -quit || true)"
+          PROJECT="$(find "$SRC_ROOT" -type d -name "*.xcodeproj" -print -quit || true)"
 
-          PROJECT_ROOT="$(dirname "$PROJECT_MARKER")"
-          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
-
-          WORKSPACE="$(find "$PROJECT_ROOT" -maxdepth 2 -type d -name "*.xcworkspace" -print -quit || true)"
-          PROJECT="$(find "$PROJECT_ROOT" -maxdepth 2 -type d -name "*.xcodeproj" -print -quit || true)"
-
-          if [ -n "$WORKSPACE" ]; then
-            echo "BUILD_CONTAINER=workspace" >> "$GITHUB_ENV"
-            echo "BUILD_FILE=$WORKSPACE" >> "$GITHUB_ENV"
+          if [ -n "$PODFILE" ]; then
+            PROJECT_ROOT="$(dirname "$PODFILE")"
+          elif [ -n "$WORKSPACE" ]; then
+            PROJECT_ROOT="$(dirname "$WORKSPACE")"
           elif [ -n "$PROJECT" ]; then
-            echo "BUILD_CONTAINER=project" >> "$GITHUB_ENV"
-            echo "BUILD_FILE=$PROJECT" >> "$GITHUB_ENV"
+            PROJECT_ROOT="$(dirname "$PROJECT")"
           else
-            echo "No .xcworkspace or .xcodeproj found under $PROJECT_ROOT"
+            echo "No Xcode project/workspace or Podfile found under $SRC_ROOT"
+            echo "Full extracted file manifest:"
+            find "$SRC_ROOT" -type f -print | sort
             exit 1
           fi
+
+          if [ -n "$WORKSPACE" ]; then
+            BUILD_CONTAINER="workspace"
+            BUILD_FILE="$WORKSPACE"
+          elif [ -n "$PROJECT" ]; then
+            BUILD_CONTAINER="project"
+            BUILD_FILE="$PROJECT"
+          else
+            echo "No buildable .xcworkspace or .xcodeproj found."
+            exit 1
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "BUILD_CONTAINER=$BUILD_CONTAINER" >> "$GITHUB_ENV"
+          echo "BUILD_FILE=$BUILD_FILE" >> "$GITHUB_ENV"
 
           echo "PROJECT_ROOT=$PROJECT_ROOT"
           echo "BUILD_CONTAINER=$BUILD_CONTAINER"
