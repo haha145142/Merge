@@ -224,20 +224,44 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$BUILD_CONTAINER" = "workspace" ]; then
-            LIST_OUTPUT="$(xcodebuild -workspace "$BUILD_FILE" -list)"
-          else
-            LIST_OUTPUT="$(xcodebuild -project "$BUILD_FILE" -list)"
+          SCHEME=""
+          SCHEME_FILE=""
+
+          if [ "$BUILD_CONTAINER" = "project" ]; then
+            SCHEME_FILE="$(find "$BUILD_FILE/xcshareddata/xcschemes" -type f -name "*.xcscheme" -print -quit 2>/dev/null || true)"
           fi
 
-          echo "$LIST_OUTPUT"
+          if [ -n "$SCHEME_FILE" ]; then
+            SCHEME="$(basename "$SCHEME_FILE" .xcscheme)"
+            echo "Using shared Xcode scheme: $SCHEME"
+          else
+            if [ "$BUILD_CONTAINER" = "workspace" ]; then
+              LIST_OUTPUT="$(xcodebuild -workspace "$BUILD_FILE" -list 2>&1)"
+            else
+              LIST_OUTPUT="$(xcodebuild -project "$BUILD_FILE" -list 2>&1)"
+            fi
 
-          SCHEME="$(printf '%s\n' "$LIST_OUTPUT" | awk '
-            /^Schemes:/ { found=1; next }
-            found && NF { gsub(/^[ \t]+|[ \t]+$/, ""); print; exit }
-          ')"
+            printf '%s\n' "$LIST_OUTPUT" | tee "$RUNNER_TEMP/xcode-list.log"
+
+            SCHEME="$(printf '%s\n' "$LIST_OUTPUT" | awk '
+              /^Schemes:/ { found=1; next }
+              found && NF { gsub(/^[ \t]+|[ \t]+$/, ""); print; exit }
+            ')"
+          fi
+
+          if [ -z "$SCHEME" ] && [ "$BUILD_CONTAINER" = "project" ]; then
+            SCHEME="$(basename "$BUILD_FILE" .xcodeproj)"
+            echo "Falling back to project name as scheme: $SCHEME"
+          fi
 
           test -n "$SCHEME"
+
+          if [ "$BUILD_CONTAINER" = "workspace" ]; then
+            xcodebuild -workspace "$BUILD_FILE" -scheme "$SCHEME" -showBuildSettings >/dev/null
+          else
+            xcodebuild -project "$BUILD_FILE" -scheme "$SCHEME" -showBuildSettings >/dev/null
+          fi
+
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
           echo "Selected scheme: $SCHEME"
 
