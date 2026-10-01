@@ -140,15 +140,16 @@ jobs:
           set -euo pipefail
           export SRC_ROOT="$RUNNER_TEMP/JevJarvis-iOS-src"
 
-          PROJECT_ROOT="$(find "$SRC_ROOT" -type f -name Podfile -print -quit | xargs -r dirname || true)"
-          if [ -z "$PROJECT_ROOT" ]; then
-            PROJECT_ROOT="$(find "$SRC_ROOT" -type d -name "*.xcworkspace" -print -quit | xargs -r dirname || true)"
+          PROJECT_MARKER="$(find "$SRC_ROOT" -type f -name Podfile -print -quit || true)"
+          if [ -z "$PROJECT_MARKER" ]; then
+            PROJECT_MARKER="$(find "$SRC_ROOT" -type d -name "*.xcworkspace" -print -quit || true)"
           fi
-          if [ -z "$PROJECT_ROOT" ]; then
-            PROJECT_ROOT="$(find "$SRC_ROOT" -type d -name "*.xcodeproj" -print -quit | xargs -r dirname || true)"
+          if [ -z "$PROJECT_MARKER" ]; then
+            PROJECT_MARKER="$(find "$SRC_ROOT" -type d -name "*.xcodeproj" -print -quit || true)"
           fi
-          test -n "$PROJECT_ROOT"
+          test -n "$PROJECT_MARKER"
 
+          PROJECT_ROOT="$(dirname "$PROJECT_MARKER")"
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
 
           WORKSPACE="$(find "$PROJECT_ROOT" -maxdepth 2 -type d -name "*.xcworkspace" -print -quit || true)"
@@ -224,11 +225,11 @@ jobs:
 
           if [ "$BUILD_CONTAINER" = "workspace" ]; then
             xcodebuild -workspace "$BUILD_FILE" \
-              "$""{COMMON_ARGS[@]}" \
+              "${COMMON_ARGS[@]}" \
               clean archive
           else
             xcodebuild -project "$BUILD_FILE" \
-              "$""{COMMON_ARGS[@]}" \
+              "${COMMON_ARGS[@]}" \
               clean archive
           fi
 
