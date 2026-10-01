@@ -47,8 +47,40 @@ jobs:
 
           unzip -q "$GITHUB_WORKSPACE/JevJarvis-iOS-云编译包.zip" -d "$SRC_ROOT"
 
-          echo "Extracted source tree:"
-          find "$SRC_ROOT" -maxdepth 3 -type f \( -name "Podfile" -o -name "*.xcodeproj" -o -name "*.xcworkspace" \) -print | sort
+          # Some cloud build packages contain another archive inside the outer ZIP.
+          # Expand nested archives until an Xcode project/workspace or Podfile is visible.
+          for depth in 1 2 3; do
+            FOUND_XCODE="$(find "$SRC_ROOT" -type d \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) -print -quit || true)"
+            FOUND_PODFILE="$(find "$SRC_ROOT" -type f -name "Podfile" -print -quit || true)"
+            if [ -n "$FOUND_XCODE" ] || [ -n "$FOUND_PODFILE" ]; then
+              break
+            fi
+
+            NESTED_ZIPS="$(find "$SRC_ROOT" -type f -name "*.zip" -print)"
+            if [ -z "$NESTED_ZIPS" ]; then
+              break
+            fi
+
+            while IFS= read -r nested_zip; do
+              [ -n "$nested_zip" ] || continue
+              dest="${nested_zip%.zip}"
+              mkdir -p "$dest"
+              echo "Expanding nested archive: $nested_zip"
+              unzip -q "$nested_zip" -d "$dest"
+              rm -f "$nested_zip"
+            done <<< "$NESTED_ZIPS"
+          done
+
+          echo "Xcode/Podfile candidates:"
+          find "$SRC_ROOT" -type d \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) -print | sort || true
+          find "$SRC_ROOT" -type f -name "Podfile" -print | sort || true
+
+          if ! find "$SRC_ROOT" -type d \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) -print -quit | grep -q . &&              ! find "$SRC_ROOT" -type f -name "Podfile" -print -quit | grep -q .; then
+            echo "No Xcode project/workspace or Podfile was found after extraction."
+            echo "Full extracted file manifest:"
+            find "$SRC_ROOT" -type f -print | sort
+            exit 1
+          fi
 
       - name: Disable App Group configuration
         shell: bash
