@@ -1,4 +1,4 @@
-name: VoiceTokenPatch V3 build
+name: VoiceTokenPatch V4 independent Fish build
 
 on:
   push:
@@ -40,6 +40,6 @@ jobs:
       - name: Upload compiled dylib
         uses: actions/upload-artifact@v4
         with:
-          name: VoiceTokenPatch-V3-arm64-dylib
+          name: VoiceTokenPatch-V4-arm64-dylib
           path: VoiceTokenPatch/dist/VoiceTokenPatch.dylib
           if-no-files-found: error
