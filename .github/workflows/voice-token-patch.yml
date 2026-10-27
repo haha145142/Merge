@@ -1,0 +1,12 @@
+name: VoiceTokenPatch V3 build
+on:
+  push:
+    paths:
+      - 'VoiceTokenPatch/**'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo 'Theos build runner initialized'
