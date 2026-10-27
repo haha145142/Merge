@@ -1,0 +1,6 @@
+{
+  Filter = {
+    Executables = ( "Aweme" );
+    Bundles = ( "com.ss.iphone.ugc.Aweme" );
+  };
+}
