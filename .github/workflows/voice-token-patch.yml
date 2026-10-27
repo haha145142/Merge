@@ -1,12 +1,45 @@
 name: VoiceTokenPatch V3 build
+
 on:
   push:
+    branches: [main]
     paths:
       - 'VoiceTokenPatch/**'
+      - '.github/workflows/voice-token-patch.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - run: echo 'Theos build runner initialized'
+      - name: Setup Theos
+        run: |
+          set -euo pipefail
+          brew install ldid || true
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
+      - name: Build standalone dylib
+        working-directory: VoiceTokenPatch
+        env:
+          THEOS: ${{ runner.temp }}/theos
+        run: |
+          set -euo pipefail
+          make clean
+          make FINALPACKAGE=1
+          mkdir -p dist
+          find .theos/obj -type f -name 'VoiceTokenPatch.dylib' -print -exec cp {} dist/VoiceTokenPatch.dylib \;
+          test -s dist/VoiceTokenPatch.dylib
+          file dist/VoiceTokenPatch.dylib
+          if otool -L dist/VoiceTokenPatch.dylib | grep -Ei 'substrate|ellekit|libhooker'; then
+            echo "Unexpected jailbreak runtime dependency" >&2
+            exit 1
+          fi
+      - name: Upload compiled dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceTokenPatch-V3-arm64-dylib
+          path: VoiceTokenPatch/dist/VoiceTokenPatch.dylib
+          if-no-files-found: error
