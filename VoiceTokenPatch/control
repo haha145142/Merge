@@ -1,7 +1,7 @@
 Package: com.voicetokenpatch.fishonly
-Name: VoiceTokenPatch Fish Only
-Version: 3.0.0
+Name: VoiceTokenPatch Fish Workspace
+Version: 4.0.0
 Architecture: iphoneos-arm
-Description: Independent Fish Audio API bridge for voicetool 1.2
+Description: Independent official Fish Audio text to speech workstation
 Maintainer: VoiceTokenPatch
 Section: Tweaks
