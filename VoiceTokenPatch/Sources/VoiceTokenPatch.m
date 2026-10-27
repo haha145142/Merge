@@ -405,13 +405,22 @@ static BOOL VTSendViaOriginalSender(NSURL *audioURL, NSString *text, double dura
                 return;
             }
             VTLastAudioURL = dest;
+            /* Original sender locates the active Douyin chat UI. Hide our
+               global window and restore Douyin as key before calling it. */
+            UIWindow *overlay = VTOverlay;
+            if (overlay) overlay.hidden = YES;
+            UIWindow *previous = VTPreviousKey;
+            if (previous && !previous.isHidden) [previous makeKeyWindow];
             BOOL sent = NO;
             @try { sent = VTSendViaOriginalSender(dest,text,duration); }
             @catch (NSException *exception) { VTSetStatus(@"原插件发送调用出现异常；文件已保存"); }
             if (sent) {
-                VTMessage(panel,@"已调用发送模块",@"Fish 官方已生成音频，原插件发送模块返回成功。请到聊天中核实是否真正发出；作者授权仍未使用。");
+                VTSetStatus(@"Fish 官方音频已交给原插件发送模块（实际送达需查看聊天）");
+                VTClose();
             } else {
-                VTMessage(panel,@"音频已生成",@"Fish 官方音频已经本地保存，但原插件发送模块未确认成功。可点击「分享最近生成的音频文件」尝试其他合法分享方式。");
+                if (overlay) [overlay makeKeyAndVisible];
+                VTSetStatus(@"Fish 官方音频成功；原插件发送模块未确认接收");
+                VTMessage(panel,@"音频已生成",@"Fish 官方 WAV 已保存，但原插件发送模块未确认发送。可点击「分享最近生成的音频文件」。");
             }
         });
     });
