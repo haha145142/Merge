@@ -6,5 +6,5 @@ LIBRARY_NAME = VoiceTokenPatch
 VoiceTokenPatch_FILES = Sources/VoiceTokenPatch.m
 VoiceTokenPatch_CFLAGS = -fobjc-arc -Wall -Wextra -Wno-unused-parameter
 VoiceTokenPatch_FRAMEWORKS = Foundation UIKit
-VoiceTokenPatch_INSTALL_PATH = /Library/MobileSubstrate/DynamicLibraries
+VoiceTokenPatch_INSTALL_PATH = /usr/lib
 include $(THEOS_MAKE_PATH)/library.mk
