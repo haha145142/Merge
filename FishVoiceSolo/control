@@ -1,0 +1,7 @@
+Package: com.fishvoicesolo.plugin
+Name: FishVoice Solo (Official API)
+Version: 5.0.0
+Architecture: iphoneos-arm
+Description: Independent Fish Audio API TTS and voice library for iOS Douyin
+Maintainer: FishVoice Solo
+Section: Utilities
