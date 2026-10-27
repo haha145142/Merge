@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 /// Fish-only patch for the user-provided voicetool v1.2 binary.
 /// It intentionally has no call-through to the original TTS implementation.
@@ -8,8 +9,12 @@ static NSString *const kFishKey = @"vtpatch.token.fish";       // Reuse V2 saved
 static NSString *const kVoices = @"vtpatch.shared.voices";    // Reuse V2 saved ID mappings.
 static NSString *const kWelcome = @"vtpatch.v3.welcome";
 static NSString *const kDomain = @"VoiceTokenPatch.Fish";
-static NSString *VTStatus = @"尚未找到原插件同步合成入口；不能确认作者额度已隔离";
+static NSString *VTStatus = @"正在检测原插件入口";
 static BOOL VTBridgeInstalled = NO;
+static BOOL VTAuthInstalled = NO;
+static __weak id VTOriginalController;
+static NSURL *VTLastAudioURL;
+static void VTShowSettings(void);
 static UIWindow *VTOverlay;
 static __weak UIWindow *VTPreviousKey;
 static NSTimeInterval VTLastShake;
@@ -134,31 +139,61 @@ static id VTBridgeTTS(id self, SEL cmd, id text, id authorToken,
     VTSetStatus([NSString stringWithFormat:@"Fish 官方已返回音频 %lu 字节（原插件解析仍需实机验证）", (unsigned long)audio.length]);
     return audio;
 }
+
+/* The original plugin's auth is separate from Fish billing. Replace its login
+   prompt with OUR own authorized-only-by-Fish operation panel: no fake author
+   license, no transmission of Fish API key to author's service. */
+static void VTInterceptAuth(id self, SEL cmd, BOOL force) {
+    (void)cmd; (void)force;
+    VTOriginalController = self;
+    dispatch_async(dispatch_get_main_queue(), ^{ VTShowSettings(); });
+}
 static void VTInstallBridge(void) {
     @synchronized (VTDefaults()) {
-        if (VTBridgeInstalled) return;
-        Class cls = objc_getClass("ZyyFishAudioConfiguration");
-        SEL selector = NSSelectorFromString(@"requestForText:token:voiceID:endpoint:options:error:");
-        Method method = cls ? class_getInstanceMethod(cls, selector) : NULL;
-        if (!method) return;
-        char type[16] = {0};
-        method_getReturnType(method, type, sizeof(type));
-        if (type[0] != '@' || method_getNumberOfArguments(method) != 8) {
-            VTStatus = @"原插件合成方法签名不同，停止安装补丁";
-            return;
+        Class fish = objc_getClass("ZyyFishAudioConfiguration");
+        SEL ttsSel = NSSelectorFromString(@"requestForText:token:voiceID:endpoint:options:error:");
+        if (!VTBridgeInstalled && fish) {
+            /* Analysis of the arm64e original proves this belongs to the
+               metaclass. V3 incorrectly used class_getInstanceMethod. */
+            Method method = class_getClassMethod(fish, ttsSel);
+            if (method) {
+                char type[16] = {0};
+                method_getReturnType(method, type, sizeof(type));
+                BOOL matches = type[0] == '@' && method_getNumberOfArguments(method) == 8;
+                for (unsigned i=2; matches && i<=6; ++i) {
+                    method_getArgumentType(method, i, type, sizeof(type));
+                    matches = type[0]=='@';
+                }
+                if (matches) {
+                    method_getArgumentType(method, 7, type, sizeof(type));
+                    matches = type[0]=='^' && type[1]=='@';
+                }
+                if (matches) {
+                    method_setImplementation(method, (IMP)VTBridgeTTS);
+                    VTBridgeInstalled = YES;
+                }
+            }
         }
-        for (unsigned i = 2; i <= 6; i++) {
-            method_getArgumentType(method, i, type, sizeof(type));
-            if (type[0] != '@') { VTStatus = @"原插件参数签名不匹配"; return; }
+        /* Independently redirect author's prompt instead of forging a token. */
+        Class controller = objc_getClass("AllVoiceController");
+        if (!VTAuthInstalled && controller) {
+            Method auth = class_getInstanceMethod(controller, @selector(presentAuth:));
+            if (auth) {
+                char type[16]={0};
+                method_getReturnType(auth,type,sizeof(type));
+                if (type[0]=='v' && method_getNumberOfArguments(auth)==3) {
+                    method_getArgumentType(auth,2,type,sizeof(type));
+                    if (type[0]=='B' || type[0]=='c') {
+                        method_setImplementation(auth,(IMP)VTInterceptAuth);
+                        VTAuthInstalled = YES;
+                    }
+                }
+            }
         }
-        method_getArgumentType(method, 7, type, sizeof(type));
-        if (type[0] != '^' || type[1] != '@') {
-            VTStatus = @"原插件 NSError** 参数签名不匹配";
-            return;
-        }
-        method_setImplementation(method, (IMP)VTBridgeTTS);
-        VTBridgeInstalled = YES;
-        VTStatus = @"已接管已识别的同步 TTS 方法；其他路径未验证";
+        VTStatus = [NSString stringWithFormat:
+            @"Fish TTS 类方法 %@\n作者授权弹窗独立替换 %@\n注意：原作者其他私有请求未被证明全被截获。",
+            VTBridgeInstalled ? @"已接管" : @"未找到",
+            VTAuthInstalled ? @"已接管" : @"未找到"];
     }
 }
 static UILabel *VTLabel(NSString *text, CGFloat size) {
@@ -193,6 +228,9 @@ static void VTClose(void) {
 }
 @interface VTFishPanel : UIViewController
 @property (nonatomic, strong) UITextField *keyField;
+@property (nonatomic, strong) UITextView *composerField;
+@property (nonatomic, strong) UITextField *composerVoice;
+@property (nonatomic, strong) UIButton *generateButton;
 @property (nonatomic, strong) UIStackView *voices;
 @end
 @implementation VTFishPanel
@@ -237,6 +275,45 @@ static void VTClose(void) {
     [stack addArrangedSubview:VTButton(@"保存官方 Token（清空也会保存）", self, @selector(saveKey))];
     [stack addArrangedSubview:VTButton(@"显示 / 隐藏 Token", self, @selector(showKey))];
     [stack addArrangedSubview:VTButton(@"查看当前合成入口状态", self, @selector(showStatus))];
+    [stack addArrangedSubview:VTLabel(@"官方独立合成 / 抖音语音发送", 19)];
+    [stack addArrangedSubview:VTLabel(@"无需作者 Token。输入文字和 Fish 官方 reference_id，点击生成并尝试通过原插件发送模块发送。发送模块属于原插件，兼容性待真机验证。", 12)];
+    UITextView *composer = [UITextView new];
+    composer.font = [UIFont systemFontOfSize:16];
+    composer.layer.borderColor = UIColor.separatorColor.CGColor;
+    composer.layer.borderWidth = 1;
+    composer.layer.cornerRadius = 9;
+    [composer.heightAnchor constraintEqualToConstant:115].active = YES;
+    self.composerField = composer;
+    id controller = VTOriginalController;
+    if (!controller) {
+        Class ctrlClass = objc_getClass("AllVoiceController");
+        if ([ctrlClass respondsToSelector:@selector(shared)])
+            controller = ((id (*)(id,SEL))objc_msgSend)(ctrlClass,@selector(shared));
+    }
+    if ([controller respondsToSelector:@selector(sourceText)]) {
+        id originalText = ((id (*)(id,SEL))objc_msgSend)(controller,@selector(sourceText));
+        if ([originalText isKindOfClass:NSString.class]) composer.text = originalText;
+    }
+    [stack addArrangedSubview:composer];
+    UITextField *voiceField = [UITextField new];
+    voiceField.borderStyle = UITextBorderStyleRoundedRect;
+    voiceField.placeholder = @"Fish 官方 reference_id / 原作者音色 ID";
+    voiceField.autocorrectionType = UITextAutocorrectionTypeNo;
+    voiceField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    if ([controller respondsToSelector:@selector(defaultVoice)]) {
+        id originalVoice = ((id (*)(id,SEL))objc_msgSend)(controller,@selector(defaultVoice));
+        if ([originalVoice isKindOfClass:NSString.class]) voiceField.text = originalVoice;
+    }
+    if (!voiceField.text.length) {
+        NSDictionary *first = VTVoices().firstObject;
+        if ([first isKindOfClass:NSDictionary.class]) voiceField.text = first[@"id"];
+    }
+    self.composerVoice = voiceField;
+    [stack addArrangedSubview:voiceField];
+    UIButton *generate = VTButton(@"使用官方额度合成并发送", self, @selector(generateAndSend));
+    self.generateButton = generate;
+    [stack addArrangedSubview:generate];
+    [stack addArrangedSubview:VTButton(@"分享最近生成的音频文件", self, @selector(shareLatestAudio))];
     [stack addArrangedSubview:VTLabel(@"音色 ID 映射（保留 V2 已保存的本地列表）", 16)];
     [stack addArrangedSubview:VTLabel(@"下方条目不会自动添加到原作者的自绘选择器；原作者选中的 ID 必须与这里记录的 ID 一致。私有音色需要 Fish 官方调用权限。", 12)];
     self.voices = [UIStackView new];
@@ -246,6 +323,108 @@ static void VTClose(void) {
     [self refreshVoices];
     [stack addArrangedSubview:VTButton(@"+ 添加作者音色 ID / 官方 reference_id 映射", self, @selector(addVoice))];
     [stack addArrangedSubview:VTButton(@"关闭设置（摇一摇重新打开）", self, @selector(closePanel))];
+}
+
+/* WAV duration calculator: no AVFoundation dependency. */
+static double VTDurationWAV(NSData *audio) {
+    const unsigned char *p = audio.bytes;
+    NSUInteger length = audio.length;
+    if (length < 44 || memcmp(p,"RIFF",4)!=0 || memcmp(p+8,"WAVE",4)!=0) return 0;
+    uint32_t byteRate = 0, payload = 0;
+    for (NSUInteger pos=12; pos+8 <= length;) {
+        uint32_t chunkLen = (uint32_t)p[pos+4] | ((uint32_t)p[pos+5]<<8) |
+             ((uint32_t)p[pos+6]<<16) | ((uint32_t)p[pos+7]<<24);
+        NSUInteger next = pos + 8 + chunkLen + (chunkLen & 1);
+        if (next > length) break;
+        if (!memcmp(p+pos,"fmt ",4) && chunkLen>=16) {
+            byteRate = (uint32_t)p[pos+16] | ((uint32_t)p[pos+17]<<8) |
+                     ((uint32_t)p[pos+18]<<16) | ((uint32_t)p[pos+19]<<24);
+        }
+        if (!memcmp(p+pos,"data",4)) payload = chunkLen;
+        pos = next;
+    }
+    return byteRate ? (double)payload/(double)byteRate : 0;
+}
+static BOOL VTSendViaOriginalSender(NSURL *audioURL, NSString *text, double duration) {
+    Class ctlClass = objc_getClass("AllVoiceController");
+    Class senderClass = objc_getClass("AllVoiceSender");
+    Class itemClass = objc_getClass("AllVoiceSendItem");
+    if (!ctlClass || !senderClass || !itemClass ||
+        ![ctlClass respondsToSelector:@selector(shared)] ||
+        ![senderClass respondsToSelector:@selector(shared)]) return NO;
+    id ctl = VTOriginalController;
+    if (!ctl) ctl = ((id (*)(id,SEL))objc_msgSend)(ctlClass,@selector(shared));
+    if (!ctl || ![ctl respondsToSelector:@selector(platform)]) return NO;
+    id platform = ((id (*)(id,SEL))objc_msgSend)(ctl,@selector(platform));
+    if (!platform) return NO;
+    id item = [[itemClass alloc] init];
+    if (![item respondsToSelector:@selector(setAudioPath:)] ||
+        ![item respondsToSelector:@selector(setDuration:)] ||
+        ![item respondsToSelector:@selector(setAudioText:)] ||
+        ![item respondsToSelector:@selector(setMime:)]) return NO;
+    [item setValue:audioURL.path forKey:@"audioPath"];
+    [item setValue:@(duration) forKey:@"duration"];
+    [item setValue:text forKey:@"audioText"];
+    [item setValue:@"audio/wav" forKey:@"mime"];
+    id sender = ((id (*)(id,SEL))objc_msgSend)(senderClass,@selector(shared));
+    if (![sender respondsToSelector:@selector(send:platform:)]) return NO;
+    return ((BOOL (*)(id,SEL,id,id))objc_msgSend)(sender,@selector(send:platform:),item,platform);
+}
+
+- (void)generateAndSend {
+    NSString *text = VTTrim(self.composerField.text);
+    NSString *voiceID = VTTrim(self.composerVoice.text);
+    NSString *token = VTTrim(self.keyField.text);
+    if (!text.length || !voiceID.length) {
+        VTMessage(self, @"信息不完整", @"必须填写合成文字与 Fish 官方音色 reference_id。");
+        return;
+    }
+    [VTDefaults() setObject:token forKey:kFishKey];
+    self.generateButton.enabled = NO;
+    [self.view endEditing:YES];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSError *problem = nil;
+        NSData *audio = VTOfficialTTS(text, voiceID, &problem);
+        double duration = audio ? VTDurationWAV(audio) : 0;
+        NSString *filename = [NSString stringWithFormat:@"vtpatch-fish-%@.wav",NSUUID.UUID.UUIDString];
+        NSURL *dest = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:filename]];
+        if (audio && !duration) {
+            problem = VTError(1102, @"官方输出不是可识别的 PCM WAV；不能交给原插件发送。");
+        }
+        if (audio && duration && ![audio writeToURL:dest options:NSDataWritingAtomic error:&problem]) {
+            audio = nil;
+        }
+        NSError *failure = problem;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            VTFishPanel *panel=weakSelf;
+            if (!panel) return;
+            panel.generateButton.enabled = YES;
+            if (failure || !audio.length || !duration) {
+                VTMessage(panel,@"Fish 官方合成失败",failure.localizedDescription ?: @"未得到音频；没有回退作者接口。");
+                return;
+            }
+            VTLastAudioURL = dest;
+            BOOL sent = NO;
+            @try { sent = VTSendViaOriginalSender(dest,text,duration); }
+            @catch (NSException *exception) { VTSetStatus(@"原插件发送调用出现异常；文件已保存"); }
+            if (sent) {
+                VTMessage(panel,@"已调用发送模块",@"Fish 官方已生成音频，原插件发送模块返回成功。请到聊天中核实是否真正发出；作者授权仍未使用。");
+            } else {
+                VTMessage(panel,@"音频已生成",@"Fish 官方音频已经本地保存，但原插件发送模块未确认成功。可点击「分享最近生成的音频文件」尝试其他合法分享方式。");
+            }
+        });
+    });
+}
+- (void)shareLatestAudio {
+    if (!VTLastAudioURL || ![NSFileManager.defaultManager fileExistsAtPath:VTLastAudioURL.path]) {
+        VTMessage(self,@"暂无音频",@"先用官方 Token 生成一段语音。");
+        return;
+    }
+    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[VTLastAudioURL] applicationActivities:nil];
+    share.popoverPresentationController.sourceView = self.view;
+    share.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),50,1,1);
+    [self presentViewController:share animated:YES completion:nil];
 }
 - (void)saveKey {
     [VTDefaults() setObject:VTTrim(self.keyField.text) forKey:kFishKey];
@@ -363,8 +542,8 @@ static void VTShowSettings(void) {
     [VTOverlay makeKeyAndVisible];
     if (![VTDefaults() boolForKey:kWelcome]) {
         [VTDefaults() setBool:YES forKey:kWelcome];
-        UIAlertController *welcome = [UIAlertController alertControllerWithTitle:@"V3 Fish 官方补丁已加载"
-          message:@"仅保留 Fish 官方 Token。已识别的合成方法不再调用作者 API，其他路径仍需要真机验证。摇一摇随时打开设置。"
+        UIAlertController *welcome = [UIAlertController alertControllerWithTitle:@"V4 Fish 官方独立语音已加载"
+          message:@"只填写 Fish 官方 Token。作者授权弹窗会进入独立官方语音页面，不再把官方 Key 发往作者服务器。摇一摇也能打开。"
           preferredStyle:UIAlertControllerStyleAlert];
         [welcome addAction:[UIAlertAction actionWithTitle:@"打开官方设置" style:UIAlertActionStyleDefault handler:nil]];
         [VTOverlay.rootViewController presentViewController:welcome animated:YES completion:nil];
