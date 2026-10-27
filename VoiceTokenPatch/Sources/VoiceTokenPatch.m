@@ -354,7 +354,7 @@ static void VTShowSettings(void) {
         }
     }
     UIWindow *keyWindow = nil;
-    NSArray *windows = activeScene ? activeScene.windows : UIApplication.sharedApplication.windows;
+    NSArray *windows = activeScene ? activeScene.windows : @[];
     for (UIWindow *candidate in windows) if (candidate.isKeyWindow) { keyWindow = candidate; break; }
     VTPreviousKey = keyWindow;
     VTOverlay = activeScene ? [[UIWindow alloc] initWithWindowScene:activeScene] : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
