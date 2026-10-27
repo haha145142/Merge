@@ -1,0 +1,49 @@
+name: Build FishVoice Solo V5
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'FishVoiceSolo/**'
+      - '.github/workflows/fishvoice-solo.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Prepare Theos
+        run: |
+          set -euo pipefail
+          brew install ldid || true
+          git clone --recursive --depth=1 https://github.com/theos/theos.git "$RUNNER_TEMP/theos"
+      - name: Compile independent arm64 library
+        working-directory: FishVoiceSolo
+        env:
+          THEOS: ${{ runner.temp }}/theos
+        run: |
+          set -euo pipefail
+          make clean
+          make FINALPACKAGE=1
+          mkdir -p dist
+          find .theos/obj -type f -name 'FishVoiceSolo.dylib' | grep -v dSYM | head -n1 | xargs -I '{}' cp '{}' dist/FishVoiceSolo.dylib
+          test -s dist/FishVoiceSolo.dylib
+          file dist/FishVoiceSolo.dylib
+          otool -L dist/FishVoiceSolo.dylib
+          if otool -L dist/FishVoiceSolo.dylib | grep -Ei 'MobileSubstrate|ElleKit|libhooker|voicetool'; then
+            echo "Error: not a standalone library" >&2
+            exit 1
+          fi
+          shasum -a 256 dist/FishVoiceSolo.dylib
+      - name: Upload single dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: FishVoiceSolo-V5-arm64-one-dylib
+          path: FishVoiceSolo/dist/FishVoiceSolo.dylib
+          retention-days: 90
+          if-no-files-found: error
