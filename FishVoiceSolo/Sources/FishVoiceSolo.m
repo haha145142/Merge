@@ -401,7 +401,7 @@ static void FVSClose(void) {
     __weak typeof(self) weakSelf=self;
     NSURLSessionConfiguration *config=NSURLSessionConfiguration.ephemeralSessionConfiguration;
     NSURLSession *session=[NSURLSession sessionWithConfiguration:config];
-    [[[session dataTaskWithRequest:request completionHandler:^(NSData *audio,NSURLResponse *response,NSError *error){
+    [[session dataTaskWithRequest:request completionHandler:^(NSData *audio,NSURLResponse *response,NSError *error){
         NSInteger status=[response isKindOfClass:NSHTTPURLResponse.class] ? [(NSHTTPURLResponse *)response statusCode]:0;
         NSError *failure=error;
         if(!failure && (status<200 || status>=300)) {
